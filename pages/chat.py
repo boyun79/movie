@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 
 # =========================================================
-# 기본 페이지 설정
+# 페이지 설정
 # =========================================================
 
 st.set_page_config(
@@ -104,7 +104,6 @@ def get_boxoffice():
     except Exception:
         return []
 
-    # KOBIS API 오류
     if "faultInfo" in data:
         return []
 
@@ -150,7 +149,132 @@ def get_movie_info(movie_code):
 
 
 # =========================================================
-# 박스오피스 데이터 가져오기
+# KOBIS에 배역 정보가 없을 때
+# Gemini가 등장인물을 추정
+# =========================================================
+
+@st.cache_data(ttl=3600)
+def guess_characters(
+    movie_title,
+    movie_year,
+    genre_text,
+    directors_text,
+):
+
+    prompt = f"""
+영화 "{movie_title}"의 실제 등장인물을 추정해서 알려줘.
+
+영화 정보:
+- 제목: {movie_title}
+- 제작연도: {movie_year}
+- 장르: {genre_text}
+- 감독: {directors_text}
+
+중요한 규칙:
+
+1. 실제 영화에 등장할 가능성이 높은 주요 인물만 알려줘.
+2. 다른 영화의 등장인물을 섞지 마.
+3. 영화 제목이 비슷한 다른 작품과 혼동하지 마.
+4. 확실하지 않은 인물은 최대한 제외해.
+5. 최대 8명까지만 알려줘.
+6. 배우 이름을 확실하게 알고 있다면 같이 적어줘.
+7. 배우 이름을 확실하게 모르면 빈칸으로 둬.
+8. 설명은 하지 말고 아래 형식만 사용해.
+
+캐릭터이름 | 배우이름
+
+예:
+주인공 | 배우이름
+조연인물 | 배우이름
+
+배우 이름을 확실하게 모르면:
+
+캐릭터이름 |
+
+형식으로 작성해.
+"""
+
+    try:
+
+        response = client.chat.completions.create(
+            model=GEMINI_MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "너는 영화 데이터 정리를 도와주는 "
+                        "정보 보조 AI야."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": prompt,
+                },
+            ],
+        )
+
+        result = response.choices[0].message.content
+
+        if not result:
+            return []
+
+        guessed_characters = []
+
+        lines = result.splitlines()
+
+        for line in lines:
+
+            line = line.strip()
+
+            if not line:
+                continue
+
+            if "|" not in line:
+                continue
+
+            parts = line.split("|", 1)
+
+            character_name = parts[0].strip()
+
+            actor_name = parts[1].strip()
+
+            # AI가 제목이나 설명을 잘못 반환한 경우 제외
+            if not character_name:
+                continue
+
+            if len(character_name) > 50:
+                continue
+
+            guessed_characters.append(
+                {
+                    "name": character_name,
+                    "actor": actor_name,
+                }
+            )
+
+        # 중복 제거
+        unique_characters = []
+
+        seen_names = set()
+
+        for character in guessed_characters:
+
+            name = character["name"]
+
+            if name not in seen_names:
+
+                seen_names.add(name)
+
+                unique_characters.append(character)
+
+        return unique_characters[:8]
+
+    except Exception:
+        return []
+
+
+# =========================================================
+# 박스오피스 가져오기
 # =========================================================
 
 movies = get_boxoffice()
@@ -186,7 +310,7 @@ for movie in movies:
 
 
 # =========================================================
-# 페이지 제목
+# 제목
 # =========================================================
 
 st.title("🎬 영화 속 인물과 대화")
@@ -228,7 +352,7 @@ movie_code = selected_movie["movieCd"]
 
 
 # =========================================================
-# 선택한 영화의 상세 정보 가져오기
+# 영화 상세 정보
 # =========================================================
 
 movie_info = get_movie_info(movie_code)
@@ -245,7 +369,7 @@ if not movie_info:
 
 
 # =========================================================
-# 영화 장르 가져오기
+# 장르
 # =========================================================
 
 genres = movie_info.get("genres", [])
@@ -264,21 +388,68 @@ genre_text = " · ".join(genre_names)
 
 
 # =========================================================
-# KOBIS에 등록된 실제 등장인물 가져오기
+# 제작연도
 # =========================================================
 
-actors = movie_info.get("actors", [])
+movie_year = movie_info.get(
+    "prdtYear",
+    ""
+)
+
+
+# =========================================================
+# 감독 정보
+# =========================================================
+
+directors = movie_info.get(
+    "directors",
+    []
+)
+
+director_names = []
+
+for director in directors:
+
+    director_name = director.get(
+        "peopleNm",
+        ""
+    )
+
+    if director_name:
+        director_names.append(
+            director_name
+        )
+
+
+directors_text = " · ".join(
+    director_names
+)
+
+
+# =========================================================
+# KOBIS 실제 배역 가져오기
+# =========================================================
+
+actors = movie_info.get(
+    "actors",
+    []
+)
 
 characters = []
 
 
 for actor in actors:
 
-    cast_name = actor.get("cast", "")
+    cast_name = actor.get(
+        "cast",
+        ""
+    )
 
-    actor_name = actor.get("peopleNm", "")
+    actor_name = actor.get(
+        "peopleNm",
+        ""
+    )
 
-    # 배역 이름이 있는 경우만 사용
     if cast_name:
 
         characters.append(
@@ -290,7 +461,7 @@ for actor in actors:
 
 
 # =========================================================
-# 중복 캐릭터 제거
+# KOBIS 배역 중복 제거
 # =========================================================
 
 unique_characters = []
@@ -306,38 +477,79 @@ for character in characters:
 
         seen_names.add(name)
 
-        unique_characters.append(character)
+        unique_characters.append(
+            character
+        )
 
 
 characters = unique_characters
 
 
 # =========================================================
-# 등장인물이 없는 경우
+# KOBIS에 배역이 없으면
+# Gemini가 등장인물을 추정
+# =========================================================
+
+characters_are_guessed = False
+
+
+if not characters:
+
+    characters = guess_characters(
+        movie_title,
+        movie_year,
+        genre_text,
+        directors_text,
+    )
+
+    characters_are_guessed = True
+
+
+# =========================================================
+# 등장인물조차 가져오지 못한 경우
 # =========================================================
 
 if not characters:
 
     st.info(
-        "KOBIS에 등록된 이 영화의 배역 정보가 없습니다. "
-        "다른 영화를 선택해보세요."
+        "이 영화의 등장인물 정보를 찾지 못했어요. "
+        "잠시 후 다시 시도해주세요."
     )
 
     st.stop()
 
 
 # =========================================================
-# 등장인물 선택
+# 등장인물 제목
 # =========================================================
 
 st.markdown(
     f"### 🎭 {movie_title}의 등장인물"
 )
 
-st.caption(
-    "영화에 등록된 실제 배역 중에서 선택하세요."
-)
 
+# =========================================================
+# AI 추정 안내
+# =========================================================
+
+if characters_are_guessed:
+
+    st.warning(
+        "⚠️ KOBIS에 이 영화의 배역 정보가 부족해서 "
+        "AI가 영화 정보를 바탕으로 등장인물을 추정했어요. "
+        "따라서 아래 인물은 실제 영화의 등장인물이 아닐 수도 있습니다."
+    )
+
+else:
+
+    st.caption(
+        "KOBIS에 등록된 배역 정보를 사용하고 있습니다."
+    )
+
+
+# =========================================================
+# 등장인물 선택
+# =========================================================
 
 character_labels = []
 
@@ -365,20 +577,29 @@ selected_character_label = st.selectbox(
 )
 
 
-selected_character_index = character_labels.index(
-    selected_character_label
+selected_character_index = (
+    character_labels.index(
+        selected_character_label
+    )
 )
 
 
-selected_character = characters[selected_character_index]
+selected_character = characters[
+    selected_character_index
+]
 
-character_name = selected_character["name"]
 
-actor_name = selected_character["actor"]
+character_name = selected_character[
+    "name"
+]
+
+actor_name = selected_character[
+    "actor"
+]
 
 
 # =========================================================
-# 영화 장르에 따른 화면 테마
+# 영화 장르별 테마
 # =========================================================
 
 def get_theme(genres):
@@ -389,7 +610,11 @@ def get_theme(genres):
     # SF
     if any(
         word in genre_text_lower
-        for word in ["SF", "에스에프", "과학"]
+        for word in [
+            "SF",
+            "에스에프",
+            "과학",
+        ]
     ):
 
         return {
@@ -404,7 +629,8 @@ def get_theme(genres):
             "pattern": (
                 "radial-gradient("
                 "circle at 20% 20%, "
-                "rgba(110,168,254,.18) 0 2px, "
+                "rgba(110,168,254,.18) "
+                "0 2px, "
                 "transparent 3px)"
             ),
         }
@@ -413,7 +639,10 @@ def get_theme(genres):
     # 판타지 / 모험
     if any(
         word in genre_text_lower
-        for word in ["판타지", "모험"]
+        for word in [
+            "판타지",
+            "모험",
+        ]
     ):
 
         return {
@@ -428,7 +657,8 @@ def get_theme(genres):
             "pattern": (
                 "radial-gradient("
                 "circle at 15% 20%, "
-                "rgba(216,167,255,.2) 0 2px, "
+                "rgba(216,167,255,.2) "
+                "0 2px, "
                 "transparent 3px)"
             ),
         }
@@ -437,7 +667,11 @@ def get_theme(genres):
     # 액션 / 범죄 / 스릴러
     if any(
         word in genre_text_lower
-        for word in ["액션", "범죄", "스릴러"]
+        for word in [
+            "액션",
+            "범죄",
+            "스릴러",
+        ]
     ):
 
         return {
@@ -452,9 +686,11 @@ def get_theme(genres):
             "pattern": (
                 "linear-gradient("
                 "135deg, "
-                "rgba(255,107,94,.08) 25%, "
+                "rgba(255,107,94,.08) "
+                "25%, "
                 "transparent 25% 50%, "
-                "rgba(255,107,94,.08) 50% 75%, "
+                "rgba(255,107,94,.08) "
+                "50% 75%, "
                 "transparent 75%)"
             ),
         }
@@ -463,7 +699,11 @@ def get_theme(genres):
     # 드라마 / 멜로 / 로맨스
     if any(
         word in genre_text_lower
-        for word in ["드라마", "멜로", "로맨스"]
+        for word in [
+            "드라마",
+            "멜로",
+            "로맨스",
+        ]
     ):
 
         return {
@@ -478,7 +718,8 @@ def get_theme(genres):
             "pattern": (
                 "radial-gradient("
                 "circle at 80% 15%, "
-                "rgba(242,140,184,.16) 0 100px, "
+                "rgba(242,140,184,.16) "
+                "0 100px, "
                 "transparent 101px)"
             ),
         }
@@ -487,7 +728,9 @@ def get_theme(genres):
     # 애니메이션
     if any(
         word in genre_text_lower
-        for word in ["애니메이션"]
+        for word in [
+            "애니메이션",
+        ]
     ):
 
         return {
@@ -502,7 +745,8 @@ def get_theme(genres):
             "pattern": (
                 "radial-gradient("
                 "circle at 10% 10%, "
-                "rgba(87,214,199,.15) 0 60px, "
+                "rgba(87,214,199,.15) "
+                "0 60px, "
                 "transparent 61px)"
             ),
         }
@@ -521,7 +765,8 @@ def get_theme(genres):
         "pattern": (
             "radial-gradient("
             "circle at 20% 20%, "
-            "rgba(142,167,255,.13) 0 2px, "
+            "rgba(142,167,255,.13) "
+            "0 2px, "
             "transparent 3px)"
         ),
     }
@@ -531,7 +776,9 @@ def get_theme(genres):
 # 테마 적용
 # =========================================================
 
-theme = get_theme(genre_names)
+theme = get_theme(
+    genre_names
+)
 
 background = theme["background"]
 
@@ -551,7 +798,7 @@ emoji = theme["emoji"]
 
 
 # =========================================================
-# 전체 화면 CSS
+# 전체 화면 디자인
 # =========================================================
 
 st.markdown(
@@ -571,7 +818,6 @@ st.markdown(
             {text_color};
     }}
 
-
     .block-container {{
         max-width:
             1050px;
@@ -583,14 +829,12 @@ st.markdown(
             5rem;
     }}
 
-
     .stApp p,
     .stApp label,
     .stApp span {{
         color:
             {text_color};
     }}
-
 
     .movie-world {{
         background:
@@ -622,7 +866,6 @@ st.markdown(
             hidden;
     }}
 
-
     .movie-world::after {{
         content:
             "";
@@ -652,7 +895,6 @@ st.markdown(
             .08;
     }}
 
-
     .world-rank {{
         color:
             {accent};
@@ -666,7 +908,6 @@ st.markdown(
         letter-spacing:
             1px;
     }}
-
 
     .world-title {{
         color:
@@ -682,7 +923,6 @@ st.markdown(
             8px;
     }}
 
-
     .world-subtitle {{
         color:
             {muted};
@@ -693,7 +933,6 @@ st.markdown(
         margin-top:
             10px;
     }}
-
 
     div[data-baseweb="select"] > div {{
         background:
@@ -708,7 +947,6 @@ st.markdown(
         border-radius:
             14px;
     }}
-
 
     div[data-testid="stChatMessage"] {{
         background:
@@ -727,7 +965,6 @@ st.markdown(
             8px;
     }}
 
-
     div[data-testid="stChatInput"] {{
         border:
             1px solid {accent};
@@ -739,7 +976,6 @@ st.markdown(
             {panel};
     }}
 
-
     div[data-testid="stChatInput"] textarea {{
         background:
             {panel};
@@ -748,12 +984,10 @@ st.markdown(
             {text_color};
     }}
 
-
     hr {{
         border-color:
             rgba(255,255,255,.12);
     }}
-
 
     </style>
     """,
@@ -765,9 +999,13 @@ st.markdown(
 # 영화 세계관 헤더
 # =========================================================
 
-safe_movie_title = html.escape(movie_title)
+safe_movie_title = html.escape(
+    movie_title
+)
 
-safe_character_name = html.escape(character_name)
+safe_character_name = html.escape(
+    character_name
+)
 
 
 st.markdown(
@@ -803,8 +1041,25 @@ actor_text = ""
 if actor_name:
 
     actor_text = (
-        f"배우: {html.escape(actor_name)}"
+        f"배우: "
+        f"{html.escape(actor_name)}"
     )
+
+
+source_text = ""
+
+if characters_are_guessed:
+
+    source_text = """
+    <div style="
+        color: #FFD166;
+        font-size: 13px;
+        margin-top: 8px;
+    ">
+        ⚠️ AI가 추정한 등장인물입니다.
+        실제 영화의 등장인물이 아닐 수도 있어요.
+    </div>
+    """
 
 
 st.markdown(
@@ -842,6 +1097,8 @@ st.markdown(
             {actor_text}
         </div>
 
+        {source_text}
+
     </div>
     """,
     unsafe_allow_html=True,
@@ -849,11 +1106,8 @@ st.markdown(
 
 
 # =========================================================
-# 등장인물별 대화 기록 저장 공간
+# 캐릭터별 대화 저장
 # =========================================================
-
-# 영화 코드 + 등장인물 이름을 조합해서
-# 각각의 캐릭터에게 별도의 대화방을 만들어줍니다.
 
 if "chat_histories" not in st.session_state:
 
@@ -865,18 +1119,17 @@ character_key = (
 )
 
 
-# 해당 캐릭터의 대화 기록이 없으면
-# 빈 대화방을 만들어줍니다.
-
 if character_key not in st.session_state.chat_histories:
 
-    st.session_state.chat_histories[character_key] = []
+    st.session_state.chat_histories[
+        character_key
+    ] = []
 
-
-# 현재 캐릭터의 대화 기록을 가져옵니다.
 
 character_messages = (
-    st.session_state.chat_histories[character_key]
+    st.session_state.chat_histories[
+        character_key
+    ]
 )
 
 
@@ -891,8 +1144,8 @@ with st.expander("🗑️ 대화 관리"):
     )
 
     st.caption(
-        "영화를 바꾸거나 다른 등장인물을 선택해도 "
-        "기존 대화는 자동으로 삭제되지 않습니다."
+        "영화나 등장인물을 바꿔도 기존 대화는 "
+        "자동으로 삭제되지 않습니다."
     )
 
     delete_button = st.button(
@@ -908,7 +1161,9 @@ with st.expander("🗑️ 대화 관리"):
 
 if delete_button:
 
-    st.session_state.chat_histories[character_key] = []
+    st.session_state.chat_histories[
+        character_key
+    ] = []
 
     st.success(
         "이 등장인물과의 대화를 지웠어요."
@@ -918,17 +1173,29 @@ if delete_button:
 
 
 # =========================================================
-# 캐릭터의 시스템 메시지
+# AI 캐릭터 설정
 # =========================================================
 
 character_system_message = f"""
 너는 영화 "{movie_title}"의 등장인물
 "{character_name}"을 바탕으로 한 대화형 캐릭터야.
 
-이 캐릭터의 영화 속 성격과 말투,
-가치관과 행동 방식을 최대한 자연스럽게 반영해.
+영화의 실제 등장인물일 가능성이 있는 캐릭터이지만,
+이 캐릭터 정보가 AI가 추정한 것일 수도 있다는 점을 기억해.
 
-영화에 등록된 배역 정보:
+영화 정보:
+
+영화 제목:
+{movie_title}
+
+제작연도:
+{movie_year}
+
+장르:
+{genre_text}
+
+감독:
+{directors_text}
 
 캐릭터 이름:
 {character_name}
@@ -936,32 +1203,39 @@ character_system_message = f"""
 배우:
 {actor_name}
 
-사용자와 대화할 때는 단순히 영화 해설자처럼 말하지 말고
+사용자와 대화할 때는 단순한 영화 해설자처럼 말하지 말고
 가능한 한 "{character_name}"의 관점에서 이야기해.
 
-다만 영화에 실제로 등장하지 않은 내용을
-공식 설정인 것처럼 확정해서 말하지 마.
+영화에 실제로 등장하지 않은 내용을
+확정적인 공식 설정인 것처럼 말하지 마.
+
+사용자가 영화의 실제 내용과 관련된 질문을 하면
+알고 있는 범위에서 자연스럽게 답해.
+
+확실하지 않은 내용은 확실하지 않다고 말해.
 
 중고등학생에게 이야기한다고 생각하고
 어려운 말은 쉬운 말로 바꿔 설명해.
 
 반드시 순수 한국어로만 답해.
 
-이전 대화의 내용을 기억해서
+이전 대화 내용을 기억해서
 자연스럽게 대화를 이어가.
 
-캐릭터의 성격은 유지하되
+캐릭터의 성격과 말투를 유지하되
 사용자의 질문에 도움이 되는 답을 해.
 """
 
 
 # =========================================================
-# 기존 대화 화면에 표시
+# 기존 대화 표시
 # =========================================================
 
 for message in character_messages:
 
-    with st.chat_message(message["role"]):
+    with st.chat_message(
+        message["role"]
+    ):
 
         st.markdown(
             message["content"]
@@ -978,15 +1252,12 @@ user_input = st.chat_input(
 
 
 # =========================================================
-# 사용자가 메시지를 입력한 경우
+# 메시지 처리
 # =========================================================
 
 if user_input:
 
-    # -----------------------------------------------------
-    # 사용자 메시지를 현재 캐릭터의 대화 기록에 저장
-    # -----------------------------------------------------
-
+    # 사용자 메시지 저장
     character_messages.append(
         {
             "role": "user",
@@ -995,10 +1266,7 @@ if user_input:
     )
 
 
-    # -----------------------------------------------------
-    # 사용자 메시지 화면에 표시
-    # -----------------------------------------------------
-
+    # 사용자 메시지 표시
     with st.chat_message("user"):
 
         st.markdown(
@@ -1006,10 +1274,7 @@ if user_input:
         )
 
 
-    # -----------------------------------------------------
-    # Gemini에게 보낼 전체 대화 만들기
-    # -----------------------------------------------------
-
+    # Gemini에게 전달할 메시지
     messages = [
         {
             "role": "system",
@@ -1023,10 +1288,7 @@ if user_input:
     )
 
 
-    # -----------------------------------------------------
-    # Gemini 답변
-    # -----------------------------------------------------
-
+    # AI 답변
     with st.chat_message("assistant"):
 
         try:
@@ -1037,10 +1299,6 @@ if user_input:
                 stream=True,
             )
 
-
-            # -------------------------------------------------
-            # 스트리밍 답변을 한 글자씩 자연스럽게 표시
-            # -------------------------------------------------
 
             def generate_response():
 
@@ -1076,10 +1334,7 @@ if user_input:
             )
 
 
-    # -----------------------------------------------------
-    # AI 답변도 현재 캐릭터의 대화 기록에 저장
-    # -----------------------------------------------------
-
+    # AI 답변 저장
     character_messages.append(
         {
             "role": "assistant",
@@ -1089,7 +1344,7 @@ if user_input:
 
 
 # =========================================================
-# 페이지 하단 안내
+# 페이지 하단
 # =========================================================
 
 st.markdown(
